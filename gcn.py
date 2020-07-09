@@ -20,141 +20,140 @@ p_id = project.drop_duplicates (subset = 'Project_ID')
 p_id['Project_ID'].astype('int32')
 id_list = p_id['Project_ID'].tolist()
 
-class graph ():
-    def __init__ (self, df, pred, logic, lag, weight, order, label):
+def chainer(s):
+    return list(chain.from_iterable(s.str.split(', ')))
+class graph:
+    def __init__ (self, df, pred, logic, lag, weight, location, label):
         self.df = df
         self.pred = pred
         self.logic = logic
         self.lag = lag
         self.weight = weight
-        self.order = order
+        self.location = location
         self.label = label
-    def chainer(s):
-        return list(chain.from_iterable(s.str.split(', ')))
+    def order_actv (self):
+        id_list = (self.df.drop_duplicates (subset = 'Project_ID'))['Project_ID'].tolist()
+        ordered_actv = self.df.head(0)
+        for i in id_list:
+            a = self.df.loc[self.df['Project_ID'] == i,]
+            a['Graph_x'] = np.arange(a.shape[0])
+            ordered_actv = ordered_actv.append (a)
+        return ordered_actv
 
-    def full_graph (self):
-        self.df[pred] = self.df[self.pred].astype(str)
-        self.df[logic] = self.df[self.logic].astype(str)
-        self.df[lag] = dself.f[self.lag].astype(str)
-        a = self.chainer(self.df[self.pred])
-        b = self.chainer(self.df[self.logic])
-        c = self.chainer(self.df[self.lag])
-        lens = self.df[self.pred].str.split(', ').map(len)
-        graph = pd.DataFrame({self.pred: a, 'Clean_task_code': np.repeat(self.df['Clean_task_code'], lens), 
-                      self.logic: b, self.lag: c,})
+#This is just a function to clean my dataset
+    def expand_predecessor (self):
+        df0 = self.order_actv()
+        df0[self.pred] = df0[self.pred].astype(str)
+        df0[self.logic] = df0[self.logic].astype(str)
+        df0[self.lag] = df0[self.lag].astype(str)
+        predecessor_list = chainer(df0[self.pred])
+        logic_list = chainer(df0[self.logic])
+        lag_list = chainer(df0[self.lag])
+        lens = df0[self.pred].str.split(', ').map(len)
+        expand = pd.DataFrame({self.pred: predecessor_list, 'Clean_task_code': np.repeat(df0['Clean_task_code'], lens), 
+                      self.logic: logic_list, self.lag: lag_list})
         x2 = self.df.loc[:,['Clean_task_code','Duration', 'Project_ID','Task_name', 'Clean_task_name','WBS', 'Graph_x','r_length', 'r_pos', 'Foundation_detail']]
-        graph_ = graph.merge(x2)
-        return graph_
+        expand_ = expand.merge(x2)
+        return expand_
 
-    def weight (self):
-        df = self.full_graph()
-        ls_l = df[self.logic].tolist()
-        ls = []
-        mid = df.groupby(self.logic).count()[['Clean_task_code']]
+    def logic_weight (self):
+        df1 = self.expand_predecessor()
+        ls_l = df1[self.logic].tolist()
+        logic_percent = []
+        summarise_logic = df1.groupby(self.logic).count()[['Clean_task_code']]
         for i in ls_l:
             if i == 'PR_FF':
-                ls.append ((mid.loc['PR_FF', 'Clean_task_code'])/len(full_))
+                logic_percent.append ((summarise_logic.loc['PR_FF', 'Clean_task_code'])/len(df1))
             if i == 'PR_SS':
-                ls.append ((mid.loc['PR_SS', 'Clean_task_code'])/len(full_))
+                logic_percent.append ((summarise_logic.loc['PR_SS', 'Clean_task_code'])/len(df1))
             if i == 'PR_FS':
-                ls.append ((mid.loc['PR_FS', 'Clean_task_code'])/len(full_))
+                logic_percent.append ((summarise_logic.loc['PR_FS', 'Clean_task_code'])/len(df1))
             if i == 'PR_SF':
-                ls.append ((mid.loc['PR_SF', 'Clean_task_code'])/len(full_))
+                logic_percent.append ((summarise_logic.loc['PR_SF', 'Clean_task_code'])/len(df1))
             if i == 'None':
-                ls.append ((mid.loc['None', 'Clean_task_code'])/len(full_))
+                logic_percent.append ((summarise_logic.loc['None', 'Clean_task_code'])/len(df1))
             if i == 'nan':
-                ls.append ((mid.loc['nan', 'Clean_task_code'])/len(full_))
-        df[self.weight] = ls
-        return df
+                logic_percent.append ((summarise_logic.loc['nan', 'Clean_task_code'])/len(df1))
+        df1[self.weight] = logic_percent
+        return df1
 
-    def pend_node(self):
-        df = self.wegiht()
-        name_ls = df[self.pred].tolist()
+    def predecessor_location(self):
+        df2 = self.logic_weight()
+        predecessor = df2[self.pred].tolist()
         ls1 = []
-        for i in name_ls:
+        for i in predecessor:
             if i != 'nan':
-                num = df.loc[df['Clean_task_code']==i, ['Graph_x']].median()['Graph_x']
-            else: num = int(10000)
-            ls1.append (num)
-        df[self.order] = ls1
-        df[self.order] = df[self.order].fillna(10000)
-        return df
+                location = df2.loc[df2['Clean_task_code']==i, ['Graph_x']].median()['Graph_x']
+            else: location = int(10000)
+            ls1.append (location)
+        df2[self.location] = ls1
+        df2[self.location] = df2[self.location].fillna(10000)
+        return df2
 
     def group_label(self):
-        df = self.pend_node()
-        name_ls = df[self.pred].tolist()
+        df3 = self.predecessor_location()
+        name_ls = df3[self.pred].tolist()
         ls1 = []
         for i in name_ls:
-            g = df.loc[df['Clean_task_code']==i,]
+            g = df3.loc[df3['Clean_task_code']==i,]
             if g.shape[0] != 0:
                 num = g.Foundation_detail.any()
             else: num = 'None'
             ls1.append (num)
-        df[self.label] = ls1
-        return df
+        df3[self.label] = ls1
+        return df3
+
 #pred is row, succ is column, loc = row*dim+column
-class matrix ():
-    def __init__ (self, df, pred, succ, order, weight_1, weight_2):
-        self.df = df
-        self.pred = pred
-        self.succ = succ
-        self.order = order
-        self.weight_1 = weight_1
-        self.weight_2 = weight_2
-
-    def adjacency_matrix (self):
-        name1_ls = self.df[self.pred].tolist()
-        graph1 = self.df[self.order].tolist()
-        weight1 = self.df[self.weight_1].tolist()
-        name2_ls = self.df[self.succ].tolist()
-        weight2 = self.df[self.weight_2].tolist()
-        x = self.df.drop_duplicates(subset = 'Clean_task_code')
-        length = x.shape[0]
+def adjacency_matrix (df, pred, succ, location, pred_logic_weight, succ_logic_weight):
+    predecessor = df[pred].tolist()
+    successor = df[succ].tolist()
+    location = df[location].tolist()
+    predecessor_logic_weight = df[pred_logic_weight].tolist()
+    successor_logic_weight = df[succ_logic_weight].tolist()
     
-        ls1,ls2,ls3,ls4 = [],[],[],[]
-        for i, j, m in zip(name1_ls, graph1, weight1):
-            if i == 10000:
-                ls1.append (0)
-                ls2.append (0)
-            else: 
-                ls1.append(i*length+j)
-                ls2.append(m)
-        for i, j, k in zip(name2_ls, graph1, weight2):
-            if i == 10000:
-                ls3.append (0)
-                ls4.append (0)
-            else: 
-                ls3.append(i+j*length)
-                ls4.append(k)         
+    x = df.drop_duplicates(subset = 'Clean_task_code')
+    length = x.shape[0]
+    
+    pred_location, pred_weight, succ_location, succ_weight = [],[],[],[]
+    for i, j, m in zip(predecessor, location, predecessor_logic_weight):
+        if i == 10000:
+            pred_location.append (0)
+            pred_weight.append (0)
+        else: 
+            pred_location.append(i*length+j)
+            pred_weight.append(m)
+    for i, j, k in zip(successor, location, successor_logic_weight):
+        if i == 10000:
+            succ_location.append (0)
+            succ_weight.append (0)
+        else: 
+            succ_location.append(i+j*length)
+            succ_weight.append(k)         
             
-        x = np.zeros((length, length))
-        np.put(x, ls1, ls2)
-        np.put(x, ls3, ls4)
-        np.fill_diagonal(x, 1)
-        return x
+    adjacency_m = np.zeros((length, length))
+    np.put(adjacency_m, pred_location, pred_weight)
+    np.put(adjacency_m, succ_location, succ_weight)
+    np.fill_diagonal(adjacency_m, 1)
+    return adjacency_m
 
-    def degree_matrix(self):
-        ls1 = []
-        amatrix = self.adjacency_matrix ()
-        length = len(amatrix)
-        x = np.zeros((length, length))
-        for i in range (length):
-            ls1.append (np.sum(amatrix[i]))
-        np.fill_diagonal(x, ls1)
-        return x
+def degree_matrix(adjacency_matrix):
+    ls1 = []
+    length = len(adjacency_matrix)
+    degree_m = np.zeros((length, length))
+    for i in range (length):
+        ls1.append (np.sum(adjacency_matrix[i]))
+    np.fill_diagonal(degree_m, ls1)
+    return degree_m
 
-    def normal_matrix (self):
-        degree_m = self.degree_matrix()
-        ad_m = self.adjacency_matrix()
-        x = np.power(degree_m.diagonal(), -0.5)
-        y = np.zeros((len(degree_m), len(degree_m)))
-        np.fill_diagonal(y, x)
-        mid = np.dot(y, ad_m)
-        a_delta = np.dot (mid, y)
-        return a_delta
+def normal_matrix (adjacency_matrix, degree_matrix):
+    x = np.power(degree_matrix.diagonal(), -0.5)
+    y = np.zeros((len(degree_matrix), len(degree_matrix)))
+    np.fill_diagonal(y, x)
+    mid = np.dot(y, adjacency_matrix)
+    a_delta = np.dot (mid, y)
+    return a_delta
 
-
-def feature_input ():
+def feature_input (df):
     x = df.drop_duplicates(subset = 'Clean_task_code')
     empty = np.zeros(60).reshape(1,60)
     ls = x['Clean_task_name'].tolist()
@@ -183,12 +182,10 @@ def prep (ls):
     for i in range (len (ls)):
         token = tokenize(str(ls[i]))
         test_token.append (list(token))  
-
     for i in range (len (test_token)):
         x = lemmatizer.lemmatize(str(test_token[i]))
         x1 = eval('' + x + '')
-        test_lemma.append (x1)
-    
+        test_lemma.append (x1)    
     for i in range (len (test_lemma)):
         test_return.append (' '.join(test_lemma[i]))
         
@@ -204,38 +201,41 @@ def token (ls):
             word = ps.stem(word)   
             ls2.append (word)
         token_word.append (ls2)
-    return token_word 
+    return token_word
     
     
-test_ = pd.read_csv ('C:/Users/yh448/OneDrive - University of Cambridge/Name_text/paper/test_head.csv')
+test_ = pd.read_csv ('D:/OneDrive - University of Cambridge/Name_text/paper/test_head.csv')
 for i in id_list:
     x2 = project.loc[project['Project_ID']== i,]
-    pred_label = graph.group_label(x2, 'Predecessor', 'Pred_logic', 'Pred_lag', 'Weight_pred', 'Pred_graph')
-    succ_label = graph.group_label(x2, 'Successor', 'Succ_logic', 'Succ_lag', 'Weight_succ', 'Succ_graph')
-    label2 = pred_label.merge (succ_label, on = ('Clean_task_code','Duration', 'Project_ID','Task_name', 'Clean_task_name','WBS', 'Graph_x','r_length', 'r_pos', 'Foundation_detail']))
+    pred = graph(x2, 'Predecessor', 'Pred_logic', 'Pred_lag', 'Weight_pred', 'Pred_graph', 'Pred_found')
+    succ = graph(x2, 'Successor', 'Succ_logic', 'Succ_lag', 'Weight_succ', 'Succ_graph', 'Succ_found')
+    pred_label = pred.group_label()
+    succ_label = succ.group_label()
+    label2 = pred_label.merge (succ_label, on = ('Clean_task_code','Duration', 'Project_ID','Task_name', 'Clean_task_name','WBS', 'Graph_x','r_length', 'r_pos', 'Foundation_detail'))
     label2['Pred_graph'] = np.where(label2.Pred_found.any() == label2.Foundation_detail.any() != 'None' , label2['Graph_x'], label2['Pred_graph'])
     label2['Succ_graph'] = np.where(label2.Succ_found.any() == label2.Foundation_detail.any() != 'None' , label2['Graph_x'], label2['Succ_graph'])
     test_ = test_.append (label2)
     #amatrix = adjacency_matrix ('Pred_graph', 'Succ_graph', 'Graph_x', 'Weight_pred', 'Weight_succ', label2)
     #print (amatrix.shape)
     
-    
-init = np.zeros((1,1))
-f_init = np.zeros((1,63))
+train_name = project['Clean_task_name'].tolist()
+train_name_ = token(prep(train_name))
+trained_model = FastText(train_name_, size = 60, min_count = 1, negative = 7, workers = 5)
+
 for i in id_list:
     x2 = test_.loc[test_['Project_ID']==i,]
-    amatrix = matrix.adjacency_matrix ('Pred_graph', 'Succ_graph', 'Graph_x', 'Weight_pred', 'Weight_succ', x2)
+    x2_ = x2.drop_duplicates(subset = 'Clean_task_code')
+    amatrix = adjacency_matrix (x2_, 'Pred_graph', 'Succ_graph', 'Graph_x', 'Weight_pred', 'Weight_succ')
     A = init.shape[0]
     B = amatrix.shape[0]
     init = np.block([[init,np.zeros((A,B))],[np.zeros((B,A)), amatrix]])
-    feature = feature_input(x2)
+    feature = feature_input(x2_)
     f_init = np.append (f_init, feature, axis=0)
-    print(x2.shape, amatrix.shape, init.shape, f_init.shape, feature.dtype, i)
+    print(x2_.shape, amatrix.shape, init.shape, f_init.shape, feature.dtype, i)
 init_ = np.delete(init, 0, 0)
 init_f = np.delete(init_, 0, 1)
-
-degree_m = matrix.degree_matrix (init_f)
-normal_m = matrix.normal_matrix (degree_m, init_f)
+degree_m = degree_matrix (init_f)
+normal_m = normal_matrix (degree_m, init_f)
 feature_m = np.delete(f_init, 0, 0)
 train_in = np.dot (normal_m, feature_m)
 
