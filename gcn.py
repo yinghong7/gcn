@@ -14,6 +14,7 @@ from nltk.stem import WordNetLemmatizer
 from sklearn.pipeline import Pipeline
 from nltk import PorterStemmer, word_tokenize
 from keras.wrappers.scikit_learn import KerasClassifier
+from sklearn import preprocessing
 
 project = pd.read_csv ('C:/Users/yh448/OneDrive - University of Cambridge/Name_text/paper/full_short_.csv')
 project = project.rename(columns={"Logic_y": "Succ_logic", "Lag_y": "Succ_lag", "Logic_x": "Pred_logic", "Lag_x": "Pred_lag"})
@@ -285,8 +286,9 @@ grid_1 = GridSearchCV(estimator = gcn_model, param_grid=param_grid_1,
                       n_jobs=-1, cv=5, scoring='f1_macro')
 
 test_nodup = test_.drop_duplicates(subset = ('Clean_task_code', 'Project_ID'))
-label_x = test_nodup['Foundation_detail'].to_numpy()
-grid_result = grid_1.fit(train_in, label_x)
+le = preprocessing.LabelEncoder()
+label = le.fit_transform(test_nodup['Foundation_detail']).reshape(len(test_nodup),1)
+grid_result = grid_1.fit(train_in, label)
 best = grid_result.best_estimator_
 print("Best: %f using %s" % (grid_result.best_score_, grid_result.best_params_))
 print (classification_report(label_x, best.predict(train_in)))
