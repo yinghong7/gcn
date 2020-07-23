@@ -13,6 +13,7 @@ from gensim.utils import tokenize
 from nltk.stem import WordNetLemmatizer
 from sklearn.pipeline import Pipeline
 from nltk import PorterStemmer, word_tokenize
+from keras.wrappers.scikit_learn import KerasClassifier
 
 project = pd.read_csv ('C:/Users/yh448/OneDrive - University of Cambridge/Name_text/paper/full_short_.csv')
 project = project.rename(columns={"Logic_y": "Succ_logic", "Lag_y": "Succ_lag", "Logic_x": "Pred_logic", "Lag_x": "Pred_lag"})
@@ -282,7 +283,7 @@ param_grid_1 = dict(batch_size = batch_size, epochs = epochs, optimizer=optimize
                     neurons = neurons)#
 grid_1 = GridSearchCV(estimator = gcn_model, param_grid=param_grid_1, 
                       n_jobs=-1, cv=5, scoring='f1_macro')
-label_x = test_nodup['Ont_label'].to_numpy()
+label_x = test_nodup['Foundation_detail'].to_numpy()
 grid_result = grid_1.fit(train_in, label_x)
 best = grid_result.best_estimator_
 print("Best: %f using %s" % (grid_result.best_score_, grid_result.best_params_))
