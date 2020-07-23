@@ -283,6 +283,8 @@ param_grid_1 = dict(batch_size = batch_size, epochs = epochs, optimizer=optimize
                     neurons = neurons)#
 grid_1 = GridSearchCV(estimator = gcn_model, param_grid=param_grid_1, 
                       n_jobs=-1, cv=5, scoring='f1_macro')
+
+test_nodup = test_.drop_duplicates(subset = ('Clean_task_code', 'Project_ID'))
 label_x = test_nodup['Foundation_detail'].to_numpy()
 grid_result = grid_1.fit(train_in, label_x)
 best = grid_result.best_estimator_
