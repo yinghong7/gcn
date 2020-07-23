@@ -33,8 +33,8 @@ class graph:
         self.weight = weight
         self.location = location
         self.label = label
-
-
+        
+        
     def order_actv (self):
         id_list = (self.df.drop_duplicates (subset = 'Project_ID'))['Project_ID'].tolist()
         ordered_actv = self.df.head(0)
@@ -43,8 +43,8 @@ class graph:
             a['Graph_x'] = np.arange(a.shape[0])
             ordered_actv = ordered_actv.append (a)
         return ordered_actv
-
-
+    
+    
 #This is just a function to clean my dataset
     def expand_predecessor (self):
         df0 = self.order_actv()
@@ -60,7 +60,7 @@ class graph:
         x2 = self.df.loc[:,['Clean_task_code','Duration', 'Project_ID','Task_name', 'Clean_task_name','WBS', 'Graph_x','r_length', 'r_pos', 'Foundation_detail']]
         expand_ = expand.merge(x2)
         return expand_
-
+    
     
     def logic_weight (self):
         df1 = self.expand_predecessor()
@@ -82,7 +82,7 @@ class graph:
                 logic_percent.append ((summarise_logic.loc['nan', 'Clean_task_code'])/len(df1))
         df1[self.weight] = logic_percent
         return df1
-
+    
     
     def predecessor_location(self):
         df2 = self.logic_weight()
@@ -96,7 +96,8 @@ class graph:
         df2[self.location] = ls1
         df2[self.location] = df2[self.location].fillna(10000)
         return df2
-
+    
+    
     def group_label(self):
         df3 = self.predecessor_location()
         name_ls = df3[self.pred].tolist()
@@ -235,6 +236,8 @@ train_name = project['Clean_task_name'].tolist()
 train_name_ = token(prep(train_name))
 trained_model = FastText(train_name_, size = 60, min_count = 1, negative = 7, workers = 5)
 
+init = np.zeros((1,1))
+f_init = np.zeros((1,63))
 for i in id_list:
     x2 = test_.loc[test_['Project_ID']==i,]
     x2_ = x2.drop_duplicates(subset = 'Clean_task_code')
@@ -245,6 +248,8 @@ for i in id_list:
     feature = feature_input(x2_)
     f_init = np.append (f_init, feature, axis=0)
     print(x2_.shape, amatrix.shape, init.shape, f_init.shape, feature.dtype, i)
+    
+    
 init_ = np.delete(init, 0, 0)
 init_f = np.delete(init_, 0, 1)
 degree_m = degree_matrix (init_f)
