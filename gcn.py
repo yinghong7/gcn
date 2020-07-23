@@ -22,6 +22,8 @@ id_list = p_id['Project_ID'].tolist()
 
 def chainer(s):
     return list(chain.from_iterable(s.str.split(', ')))
+
+
 class graph:
     def __init__ (self, df, pred, logic, lag, weight, location, label):
         self.df = df
@@ -31,6 +33,8 @@ class graph:
         self.weight = weight
         self.location = location
         self.label = label
+
+
     def order_actv (self):
         id_list = (self.df.drop_duplicates (subset = 'Project_ID'))['Project_ID'].tolist()
         ordered_actv = self.df.head(0)
@@ -39,6 +43,7 @@ class graph:
             a['Graph_x'] = np.arange(a.shape[0])
             ordered_actv = ordered_actv.append (a)
         return ordered_actv
+
 
 #This is just a function to clean my dataset
     def expand_predecessor (self):
@@ -56,6 +61,7 @@ class graph:
         expand_ = expand.merge(x2)
         return expand_
 
+    
     def logic_weight (self):
         df1 = self.expand_predecessor()
         ls_l = df1[self.logic].tolist()
@@ -77,6 +83,7 @@ class graph:
         df1[self.weight] = logic_percent
         return df1
 
+    
     def predecessor_location(self):
         df2 = self.logic_weight()
         predecessor = df2[self.pred].tolist()
@@ -103,6 +110,7 @@ class graph:
         df3[self.label] = ls1
         return df3
 
+    
 #pred is row, succ is column, loc = row*dim+column
 def adjacency_matrix (df, pred, succ, location, pred_logic_weight, succ_logic_weight):
     predecessor = df[pred].tolist()
@@ -136,6 +144,7 @@ def adjacency_matrix (df, pred, succ, location, pred_logic_weight, succ_logic_we
     np.fill_diagonal(adjacency_m, 1)
     return adjacency_m
 
+
 def degree_matrix(adjacency_matrix):
     ls1 = []
     length = len(adjacency_matrix)
@@ -145,6 +154,7 @@ def degree_matrix(adjacency_matrix):
     np.fill_diagonal(degree_m, ls1)
     return degree_m
 
+
 def normal_matrix (adjacency_matrix, degree_matrix):
     x = np.power(degree_matrix.diagonal(), -0.5)
     y = np.zeros((len(degree_matrix), len(degree_matrix)))
@@ -152,6 +162,7 @@ def normal_matrix (adjacency_matrix, degree_matrix):
     mid = np.dot(y, adjacency_matrix)
     a_delta = np.dot (mid, y)
     return a_delta
+
 
 def feature_input (df):
     x = df.drop_duplicates(subset = 'Clean_task_code')
@@ -176,6 +187,7 @@ def feature_input (df):
     empty_ = empty_.astype(float)
     return empty_ 
 
+
 lemmatizer = WordNetLemmatizer()
 def prep (ls):
     test_token, test_lemma, test_return = [], [], []
@@ -187,9 +199,10 @@ def prep (ls):
         x1 = eval('' + x + '')
         test_lemma.append (x1)    
     for i in range (len (test_lemma)):
-        test_return.append (' '.join(test_lemma[i]))
-        
+        test_return.append (' '.join(test_lemma[i]))       
     return test_return
+
+
 def token (ls):
     ps = PorterStemmer()
     token_word = []
