@@ -16,7 +16,7 @@ from nltk import PorterStemmer, word_tokenize
 from keras.wrappers.scikit_learn import KerasClassifier
 from sklearn import preprocessing
 
-project = pd.read_csv ('C:/Users/yh448/OneDrive - University of Cambridge/Name_text/paper/full_short_.csv')
+project = pd.read_csv ('/Users/ying/Name_text/paper/full_short_.csv')
 project = project.rename(columns={"Logic_y": "Succ_logic", "Lag_y": "Succ_lag", "Logic_x": "Pred_logic", "Lag_x": "Pred_lag"})
 p_id = project.drop_duplicates (subset = 'Project_ID')
 p_id['Project_ID'].astype('int32')
@@ -24,6 +24,16 @@ id_list = p_id['Project_ID'].tolist()
 
 def chainer(s):
     return list(chain.from_iterable(s.str.split(', ')))
+
+
+def childern (df, successor_name, current_name):
+    sub_child = []
+    for i in range (len(df)):
+        successor_id = iter (df[successor_name][i].split(', '))
+        one = iter(np.ones(len(df[successor_name])))
+        sub_child.append (dict(zip(successor_id, one)))
+    G = dict(zip(df[current_name].tolist(), sub_child))
+    return G
 
 
 class graph:
@@ -146,6 +156,94 @@ def adjacency_matrix (df, pred, succ, location, pred_logic_weight, succ_logic_we
     np.put(adjacency_m, succ_location, succ_weight)
     np.fill_diagonal(adjacency_m, 1)
     return adjacency_m
+
+
+def topological_order(sources, children):
+    # copy sources as it is mutated, and start with an empty order
+    sources = list(sources)
+    order = []
+    visited = set()
+    # sources can share components (a single DFS might cover multiple), so consume
+    #  them from the set to avoid repeating.
+    while sources:
+        root = sources.pop()
+        if root in visited:
+            continue
+        # DFS's traverse the (reachable) component, possibly including other sources
+        for data, event in Traverse.depth_first(
+                root, children, preorder=False, cycles=True
+        ):
+            if event == Traverse.CYCLE:
+                # raise cycles immediately
+                raise CycleException(list(data))
+            if event == Traverse.EXIT and data not in visited:
+                # already visited => already in the topological order
+                order.append(data)
+                visited.add(data)
+    # the topological order is built reversed, so re-reverse it
+    return reversed(order)
+
+
+class Traverse(enum.Enum):
+    ENTRY = 1
+    EXIT = 2
+    CYCLE = 3
+    LEAF = 4
+    def depth_first(root, children, *,
+                    preorder=True,
+                    postorder=True,
+                    cycles=False,
+                    leaves=False,
+                    repeat=False
+                    ):
+        # visited describes if a node which has been visited is an ancestor or not
+        ancestors = []
+        visited = {}
+        # a list of (node, event) tuples indicating the node and why it is of interest.
+        to_visit = [(root, Traverse.ENTRY)]
+        while to_visit:
+            # for DFS, to_vist is treated like a stack
+            (visiting, event) = to_visit.pop()
+
+            if event == Traverse.EXIT:
+                ancestors.pop()
+                visited[visiting] = False
+                if postorder: # postorder traversal
+                    yield visiting, event
+                continue
+
+            # is_ancestor is None if visiting hasn't been visited before,
+            #  False if visiting is not an ancestor, and True otherwise.
+            is_ancestor = visited.get(visiting)
+            if not is_ancestor is None:
+                # revisiting an ancestor node means a cycle has been found.
+                if is_ancestor and cycles:
+                    # efficiently find what has been visited between visits
+                    # (avoid copying explicitly or via splice)
+                    cycle_start = len(ancestors)
+                    for i, ancestor in enumerate(reversed(ancestors)):
+                        if ancestor == visiting:
+                            cycle_start = len(ancestors) - (i + 1)
+                            break
+                    # and provide the whole detected cycle
+                    yield ancestors[cycle_start:], Traverse.CYCLE
+                # dont repeat already-traversed nodes unless specifically requested
+                if not repeat:
+                    continue
+
+            if event == Traverse.ENTRY:
+                ancestors.append(visiting)
+                visited[visiting] = True
+                if preorder: # preorder traversal
+                    yield visiting, event
+                # stack descendants after yield in case client bails in yield,
+                # and don't forget to stack the leaving visit to this node.
+                en_route = list(zip(children(visiting), itertools.repeat(Traverse.ENTRY)))
+                if leaves and not en_route:
+                    # leaves are nodes with no further children
+                    yield iter(ancestors), Traverse.LEAF
+                to_visit.append((visiting, Traverse.EXIT))
+                to_visit.extend(en_route)
 
 
 def degree_matrix(adjacency_matrix):
