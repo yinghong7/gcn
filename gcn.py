@@ -359,19 +359,16 @@ train_in = np.dot (normal_m, feature_m)
 
 
 batch_size = [20, 40, 60, 70, 80]
-epochs = [60, 70, 80, 90, 100]
+epochs = [60, 70, 80, 90]
 optimizer = ['SGD']
-neurons = [50,70,100,120,150]
+neurons = [70,100,120]
 
 def create_model(optimizer='sgd', neurons = 20): 
     gcn_model = models.Sequential()
     gcn_model.add(layers.Dense(neurons, activation='relu', input_dim = 63))
-    gcn_model.add(layers.Dense(neurons, activation='softmax'))
-    gcn_model.add(layers.Dense(neurons, activation='softmax'))
-    gcn_model.add(layers.Dense(neurons, activation='softmax'))
-    gcn_model.add(layers.Dense(neurons, activation='softmax'))
-    gcn_model.add(layers.Dense(neurons, activation='softmax'))
     gcn_model.add(layers.Dense(neurons, activation='relu'))
+    gcn_model.add(layers.Dense(neurons, activation='relu'))
+    gcn_model.add(layers.Dense(neurons, activation='softmax'))
     gcn_model.add(layers.Dense(1))
     #optimizer = tf.keras.optimizers.SGD(lr=learn_rate, momentum=momentum)
     gcn_model.compile(loss='categorical_crossentropy', optimizer=optimizer, metrics=['accuracy'])
