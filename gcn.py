@@ -1,8 +1,14 @@
 import pandas as pd
 import numpy as np
+import itertools
+import collections
+import enum
+import heapq
+import json
 from itertools import chain
 from numpy import load, save
 import h5py
+import re
 import tensorflow as tf
 from tensorflow.keras import datasets, layers, models
 from sklearn.model_selection import GridSearchCV
@@ -14,175 +20,273 @@ from nltk.stem import WordNetLemmatizer
 from sklearn.pipeline import Pipeline
 from nltk import PorterStemmer, word_tokenize
 from keras.wrappers.scikit_learn import KerasClassifier
-from sklearn import preprocessing
+import matplotlib.pyplot as plt
+from sklearn.manifold import TSNE
+from sklearn.preprocessing import OneHotEncoder, LabelEncoder, MinMaxScaler
+from sklearn.decomposition import PCA
+from gensim import corpora
+import pickle
+import scipy
 
-project = pd.read_csv ('/Users/ying/Name_text/paper/full_short_.csv')
-project = project.rename(columns={"Logic_y": "Succ_logic", "Lag_y": "Succ_lag", "Logic_x": "Pred_logic", "Lag_x": "Pred_lag"})
-p_id = project.drop_duplicates (subset = 'Project_ID')
-p_id['Project_ID'].astype('int32')
-id_list = p_id['Project_ID'].tolist()
 
+
+####Tagging
+taggers = pd.read_csv ('data_yh/ontology.csv')
+project = pd.read_csv ('data_yh/full_dataset.csv')
+
+level3 = taggers['Element_level3'].tolist()
+level4 = taggers['Element_level4'].tolist()
+level4_token = token(prep(level4))
+level3_token = token(prep(level3))
+
+sim_tag = []
+for i, j in zip (level3_token, level4_token):
+    sim_tag.append (list(zip(j, i)))
+
+tag_ = UnigramTagger(sim_tag)
+test = token(prep(project['Task_name'].tolist()))
+
+tagged_actv = []
+for i in test:
+    tagged_actv.append (tag_.tag(i))
+
+tagged_ls = []
+for i in range (len(tagged_actv)):
+    a = []
+    for j in range (len(tagged_actv[i])):
+        a.append(str(tagged_actv[i][j][1]))
+    tagged_ls.append(' '.join(a))
+project['All_tagged'] = tagged_ls
+project["All_tagged"] = project["All_tagged"].str.replace ('None', '').str.strip(' ')
+project.to_csv ('data_yh/full_dataset.csv')
+
+####GCN input
 def chainer(s):
     return list(chain.from_iterable(s.str.split(', ')))
 
+def create_graph_edge (project, project_id_):
+    lens = project['Successor'].str.split(', ').map(len)
+    expanded_df = pd.DataFrame({'Current': np.repeat(project['Current'], lens), 
+                                'Project_ID': np.repeat(project['Project_ID'], lens),
+                                'Successor': chainer (project['Successor']), 
+                                'Logic': chainer (project['Succ_logic']), 'Lag': chainer (project['Succ_lag'])})
+    expanded_df['Successor_ID'] = expanded_df['Successor'].astype(str) +"_"+ expanded_df['Project_ID'].astype(str)
+
+    total_list = expanded_df['Current'].tolist()
+    total_list.extend(expanded_df['Successor_ID'].tolist())
+    actv_list = list(dict.fromkeys(total_list))
+    actv_id = list(range (0, len(actv_list)))
+
+    expanded_df['Current_num'], expanded_df['Successor_num'] = "", ""
+    
+    for i, j in zip(actv_list, actv_id):
+        expanded_df.loc[expanded_df.Current == i, 'Current_num'] = j
+        expanded_df.loc[expanded_df.Successor_ID == i, 'Successor_num'] = j
+        
+    expanded_df['Current_num'] = expanded_df['Current_num'].astype(str)
+    expanded_df['Successor_num'] = expanded_df['Successor_num'].astype(str)   
+    expanded_df['Logic'] = (expanded_df['Logic'].astype(str)).str.strip()
+    expanded_df['Current']= expanded_df['Current'].str.strip()
+    expanded_df['Lag'] = expanded_df['Lag'].str.strip().replace ('None', 0)    
+    expanded_df = expanded_df.assign (Weight_lag = lambda x: np.nan_to_num(np.log(x['Lag'].astype(float)/8+1)))   
+    m = expanded_df.head(0)
+    
+    for i in project_id_:
+        sub = expanded_df.loc[expanded_df['Project_ID']==int(i),]
+        x = lambda name: sub['Logic'].value_counts()[name]/len(sub)
+        sub['Weight_logic'] = (x(sub['Logic'].tolist())).to_frame()['Logic'].tolist()
+        m = m.append(sub)
+    m['Combined_edge'] = 0.5*m['Weight_lag'] + 0.5*m['Weight_logic'] 
+    return m, actv_list
+
+def cbow (ls, model):
+    x, cbow = np.zeros((1,60)), np.zeros((1,60))
+    ls1 = []
+    for i in range(len(ls)):
+        m = ls[i]
+        for word in m:
+            vector = model.wv[word].reshape(1, 60)
+            x = np.append (x, vector, axis = 0)
+        cbow_ = (np.sum(x, axis = 0)).reshape(1,60)
+        cbow = np.append (cbow, cbow_, axis = 0)
+    cbow_m = np.delete(cbow, 0, axis = 0)   
+    return cbow_m
+
+def token (ls):
+    ps = PorterStemmer()
+    token_word = []      
+    for i in range (len(ls)):
+        ls1 = word_tokenize(str(ls[i]))
+        ls2 = []
+        for word in ls1:
+            b = re.sub(r"\b[a-zA-Z]\b", "", ps.stem (word.lower()))
+            ls2.append (re.sub(r'[^\w]', '', b))
+        token_word.append ([x for x in ls2 if x])
+    return token_word
+
+def feature (full, actv_list, trained_model):
+    empty = np.zeros(123).reshape(1,123)
+    label_ = []
+    for i in range (len(actv_list)):
+        y = lambda name: np.asarray(df_[name].fillna(0).tolist())
+        df_ = full.loc[(full['Current'] == actv_list[i]), ]
+        if df_.shape[0] != 0:
+            length = y('r_length')
+            pos = y('r_pos')
+            duration = np.log(y('Duration')/8 + 1)
+            task_token = token(df_['Task_name'].tolist())
+            wbs_token = token(df_['WBS'].tolist())
+            m = cbow (task_token, trained_model)
+            n = cbow (wbs_token, trained_model)
+            other_feature_2 = np.append (duration.reshape(1,1), np.append (length.reshape(1,1), pos.reshape(1,1), axis = 1), axis = 1)
+            empty = np.append (empty, np.append (np.append(m, n, axis = 1), other_feature_2, axis = 1), axis = 0)
+            label_.extend (df_['2021_label'].tolist())
+        if df_.shape[0] == 0:
+            empty = np.append (empty, np.zeros(123).reshape(1,123), axis = 0)
+            label_.extend ([np.nan])
+        empty_ = np.delete(empty, 0, axis = 0)        
+    return empty_, label_
+
+
+trained_model60 = FastText.load ('pretrained_model/60_model')
+
+train_id_ = [4019, 4459, 5046, 41214, 75020, 140297, 99673, 121395, 3148]
+test_id_ = [101597, 96831, 118994, 6621]
+id_ = [4019, 4459, 5046, 41214, 75020, 140297, 99673, 121395, 3148, 101597, 96831, 118994, 6621]
+train_project = project[project['Project_ID'].isin(train_id_)].drop_duplicates (subset = ['Current'])
+train_df, train_actv = expand (train_project, train_id_)
+train_matrix, train_label = feature(project, train_actv, trained_model60)
+
+test_project = project[project['Project_ID'].isin(test_id_)].drop_duplicates (subset = ['Current'])
+test_df, test_actv = expand (test_project, test_id_)
+test_matrix, test_label = feature(project, test_actv, trained_model60)
+
+
+le = LabelEncoder()
+enc = OneHotEncoder()
+train_label.extend (test_label)
+label_enc = enc.fit_transform(le.fit_transform(np.asarray(train_label)).reshape(len(train_label),1)).toarray()
+
+train_label_onehot = label_enc[0:8677]
+test_label_onehot = label_enc[8677:12980]
+pickle.dump(train_label_onehot, open("data_yh/ind.new_label2d.ally","wb"))
+pickle.dump(test_label_onehot, open("data_yh/ind.new_label2d.ty","wb"))
+
+
+train_df = pd.DataFrame(output_format(train_matrix))
+train_df['label'] = label_[0:8677]
+train_df = pd.concat ([train_df, pd.DataFrame(train_label)], axis = 1)
+transductive_df = train_df.loc[train_df['label']!= 'nan']
+
+x = scipy.sparse.csr_matrix(transductive_df.iloc[:, 0:123].values)
+y = transductive_df.iloc[:,124:133].to_numpy()
+pickle.dump(y, open("data_yh/ind.new_label.y","wb"))
+pickle.dump(x, open("data_yh/ind.new_label.x","wb"))
+
+allx = scipy.sparse.csr_matrix(output_format(train_matrix).astype(float))
+tx = scipy.sparse.csr_matrix(output_format(test_matrix).astype(float))
+pickle.dump(tx, open("data_yh/ind.new_label.tx","wb"))
+pickle.dump(allx, open("data_yh/ind.new_label.allx","wb"))
+
+
+scaler = MinMaxScaler()
+tsne_model_en_2d = TSNE(perplexity=30, n_components=3, n_iter=3500, random_state=32)
+x_2d = tsne_model_en_2d.fit_transform(x.toarray())
+tx_2d = tsne_model_en_2d.fit_transform(tx.toarray())
+allx_2d = tsne_model_en_2d.fit_transform(allx.toarray())
+pickle.dump(scipy.sparse.csr_matrix(x_2d), open("data_yh/ind.new_label2d.x","wb"))
+pickle.dump(scipy.sparse.csr_matrix(tx_2d), open("data_yh/ind.new_label2d.tx","wb"))
+pickle.dump(scipy.sparse.csr_matrix(allx_2d), open("data_yh/ind.new_label2d.allx","wb"))
+
+
+total = project[project['Project_ID'].isin(id_)].drop_duplicates (subset = ['Current'])
+total_df, total_actv = create_graph_edge (total, id_)
+a = np.asarray(total_df['Current_num'].to_numpy(), dtype=np.int, order='C')
+b = np.asarray(total_df['Successor_num'].to_numpy(), dtype=np.int, order='C')
+c = np.asarray(total_df['Combined_edge'].to_numpy(), dtype=np.int, order='C')
+elist = zip(a, b, c)
+pickle.dump(elist, open("data_yh/ind.new_label.graph","wb"))
+
+
+######
+feed_dict_val = construct_feed_dict(features, support, y_test, test_mask, placeholders)
+a = sess.run([model.outputs, model.loss, model.accuracy], feed_dict=feed_dict_val)
+y_pred = a[0] #graph embedding
+
+import itertools
+import enum
 
 def childern (df, successor_name, current_name):
     sub_child = []
+    df[successor_name] = df[successor_name].astype(str)
     for i in range (len(df)):
-        successor_id = iter (df[successor_name][i].split(', '))
+        successor_id = iter ((df[successor_name].tolist())[i].split(', '))
         one = iter(np.ones(len(df[successor_name])))
         sub_child.append (dict(zip(successor_id, one)))
-    G = dict(zip(df[current_name].tolist(), sub_child))
+    succ_list = list(itertools.chain.from_iterable(df[successor_name].str.split(', ')))
+    diff_set = set(succ_list) - set(df[current_name].tolist()) - set(['None'])
+    G = {**dict(zip(df[current_name].tolist(), sub_child)), **dict([(diff, {}) for diff in diff_set])}
     return G
 
 
-class graph:
-    def __init__ (self, df, pred, logic, lag, weight, location, label):
-        self.df = df
-        self.pred = pred
-        self.logic = logic
-        self.lag = lag
-        self.weight = weight
-        self.location = location
-        self.label = label
-        
-        
-    def order_actv (self):
-        id_list = (self.df.drop_duplicates (subset = 'Project_ID'))['Project_ID'].tolist()
-        ordered_actv = self.df.head(0)
-        for i in id_list:
-            a = self.df.loc[self.df['Project_ID'] == i,]
-            a['Graph_x'] = np.arange(a.shape[0])
-            ordered_actv = ordered_actv.append (a)
-        return ordered_actv
-    
-    
-#This is just a function to clean my dataset
-    def expand_predecessor (self):
-        df0 = self.order_actv()
-        df0[self.pred] = df0[self.pred].astype(str)
-        df0[self.logic] = df0[self.logic].astype(str)
-        df0[self.lag] = df0[self.lag].astype(str)
-        predecessor_list = chainer(df0[self.pred])
-        logic_list = chainer(df0[self.logic])
-        lag_list = chainer(df0[self.lag])
-        lens = df0[self.pred].str.split(', ').map(len)
-        expand = pd.DataFrame({self.pred: predecessor_list, 'Clean_task_code': np.repeat(df0['Clean_task_code'], lens), 
-                      self.logic: logic_list, self.lag: lag_list})
-        x2 = self.df.loc[:,['Clean_task_code','Duration', 'Project_ID','Task_name', 'Clean_task_name','WBS', 'Graph_x','r_length', 'r_pos', 'Foundation_detail']]
-        expand_ = expand.merge(x2)
-        return expand_
-    
-    
-    def logic_weight (self):
-        df1 = self.expand_predecessor()
-        ls_l = df1[self.logic].tolist()
-        logic_percent = []
-        summarise_logic = df1.groupby(self.logic).count()[['Clean_task_code']]
-        for i in ls_l:
-            if i == 'PR_FF':
-                logic_percent.append ((summarise_logic.loc['PR_FF', 'Clean_task_code'])/len(df1))
-            if i == 'PR_SS':
-                logic_percent.append ((summarise_logic.loc['PR_SS', 'Clean_task_code'])/len(df1))
-            if i == 'PR_FS':
-                logic_percent.append ((summarise_logic.loc['PR_FS', 'Clean_task_code'])/len(df1))
-            if i == 'PR_SF':
-                logic_percent.append ((summarise_logic.loc['PR_SF', 'Clean_task_code'])/len(df1))
-            if i == 'None':
-                logic_percent.append ((summarise_logic.loc['None', 'Clean_task_code'])/len(df1))
-            if i == 'nan':
-                logic_percent.append ((summarise_logic.loc['nan', 'Clean_task_code'])/len(df1))
-        df1[self.weight] = logic_percent
-        return df1
-    
-    
-    def predecessor_location(self):
-        df2 = self.logic_weight()
-        predecessor = df2[self.pred].tolist()
-        ls1 = []
-        for i in predecessor:
-            if i != 'nan':
-                location = df2.loc[df2['Clean_task_code']==i, ['Graph_x']].median()['Graph_x']
-            else: location = int(10000)
-            ls1.append (location)
-        df2[self.location] = ls1
-        df2[self.location] = df2[self.location].fillna(10000)
-        return df2
-    
-    
-    def group_label(self):
-        df3 = self.predecessor_location()
-        name_ls = df3[self.pred].tolist()
-        ls1 = []
-        for i in name_ls:
-            g = df3.loc[df3['Clean_task_code']==i,]
-            if g.shape[0] != 0:
-                num = g.Foundation_detail.any()
-            else: num = 'None'
-            ls1.append (num)
-        df3[self.label] = ls1
-        return df3
-
-    
-#pred is row, succ is column, loc = row*dim+column
-def adjacency_matrix (df, pred, succ, location, pred_logic_weight, succ_logic_weight):
-    predecessor = df[pred].tolist()
-    successor = df[succ].tolist()
-    location = df[location].tolist()
-    predecessor_logic_weight = df[pred_logic_weight].tolist()
-    successor_logic_weight = df[succ_logic_weight].tolist()
-    
-    x = df.drop_duplicates(subset = 'Clean_task_code')
-    length = x.shape[0]
-    
-    pred_location, pred_weight, succ_location, succ_weight = [],[],[],[]
-    for i, j, m in zip(predecessor, location, predecessor_logic_weight):
-        if i == 10000:
-            pred_location.append (0)
-            pred_weight.append (0)
-        else: 
-            pred_location.append(i*length+j)
-            pred_weight.append(m)
-    for i, j, k in zip(successor, location, successor_logic_weight):
-        if i == 10000:
-            succ_location.append (0)
-            succ_weight.append (0)
-        else: 
-            succ_location.append(i+j*length)
-            succ_weight.append(k)         
-            
-    adjacency_m = np.zeros((length, length))
-    np.put(adjacency_m, pred_location, pred_weight)
-    np.put(adjacency_m, succ_location, succ_weight)
-    np.fill_diagonal(adjacency_m, 1)
-    return adjacency_m
+def cleanNullTerms(d):
+    for i, j in d.items():
+        for k, v in j.items():
+            if k == 'None': d[i] = {}
+    return d
 
 
 def topological_order(sources, children):
-    # copy sources as it is mutated, and start with an empty order
     sources = list(sources)
     order = []
     visited = set()
-    # sources can share components (a single DFS might cover multiple), so consume
-    #  them from the set to avoid repeating.
     while sources:
         root = sources.pop()
         if root in visited:
             continue
-        # DFS's traverse the (reachable) component, possibly including other sources
         for data, event in Traverse.depth_first(
                 root, children, preorder=False, cycles=True
         ):
             if event == Traverse.CYCLE:
-                # raise cycles immediately
                 raise CycleException(list(data))
             if event == Traverse.EXIT and data not in visited:
-                # already visited => already in the topological order
                 order.append(data)
                 visited.add(data)
-    # the topological order is built reversed, so re-reverse it
     return reversed(order)
 
+
+def topological(order, children, flow=None, *, choose=min):
+    flow = flow or {}
+    for node_id in order:
+        if node_id not in flow:
+            flow[node_id] = (0, set())
+            node_distance = 0
+        else:
+            node_distance, _ = flow[node_id]
+        for child_id, step_distance in children(node_id):
+            child_distance = step_distance + node_distance
+            if child_id not in flow:
+                flow[child_id] = (child_distance, {node_id})
+                continue
+            candidate_distance, candidate_steps = flow[child_id]
+            if child_distance == candidate_distance:
+                candidate_steps.add(node_id)
+                continue
+            flow[child_id] = choose(
+                flow[child_id], (child_distance, {node_id}), key=lambda x: x[0]
+            )
+        if len(flow.keys()) < 3:del flow[list(flow.keys())[0]]
+    return flow
+
+
+def sub_graph (project, successor):
+    succ_topo = {}
+    succ_sub_G = cleanNullTerms (childern (project, successor, 'Clean_task_code'))
+    foundation_list = project['Clean_task_code'].tolist()
+    for j in foundation_list:
+        topo1 = {j: topological(topological_order([j], lambda n: succ_sub_G[n].keys()), lambda n: succ_sub_G[n].items())}
+        succ_topo.update(topo1)
+    return succ_topo
 
 class Traverse(enum.Enum):
     ENTRY = 1
@@ -196,195 +300,43 @@ class Traverse(enum.Enum):
                     leaves=False,
                     repeat=False
                     ):
-        # visited describes if a node which has been visited is an ancestor or not
         ancestors = []
         visited = {}
-        # a list of (node, event) tuples indicating the node and why it is of interest.
         to_visit = [(root, Traverse.ENTRY)]
         while to_visit:
-            # for DFS, to_vist is treated like a stack
             (visiting, event) = to_visit.pop()
-
             if event == Traverse.EXIT:
                 ancestors.pop()
                 visited[visiting] = False
-                if postorder: # postorder traversal
+                if postorder: 
                     yield visiting, event
                 continue
-
-            # is_ancestor is None if visiting hasn't been visited before,
-            #  False if visiting is not an ancestor, and True otherwise.
             is_ancestor = visited.get(visiting)
             if not is_ancestor is None:
-                # revisiting an ancestor node means a cycle has been found.
                 if is_ancestor and cycles:
-                    # efficiently find what has been visited between visits
-                    # (avoid copying explicitly or via splice)
                     cycle_start = len(ancestors)
                     for i, ancestor in enumerate(reversed(ancestors)):
                         if ancestor == visiting:
                             cycle_start = len(ancestors) - (i + 1)
                             break
-                    # and provide the whole detected cycle
                     yield ancestors[cycle_start:], Traverse.CYCLE
-                # dont repeat already-traversed nodes unless specifically requested
                 if not repeat:
                     continue
-
             if event == Traverse.ENTRY:
                 ancestors.append(visiting)
                 visited[visiting] = True
-                if preorder: # preorder traversal
+                if preorder: 
                     yield visiting, event
-                # stack descendants after yield in case client bails in yield,
-                # and don't forget to stack the leaving visit to this node.
                 en_route = list(zip(children(visiting), itertools.repeat(Traverse.ENTRY)))
                 if leaves and not en_route:
-                    # leaves are nodes with no further children
                     yield iter(ancestors), Traverse.LEAF
                 to_visit.append((visiting, Traverse.EXIT))
                 to_visit.extend(en_route)
 
-
-def degree_matrix(adjacency_matrix):
-    ls1 = []
-    length = len(adjacency_matrix)
-    degree_m = np.zeros((length, length))
-    for i in range (length):
-        ls1.append (np.sum(adjacency_matrix[i]))
-    np.fill_diagonal(degree_m, ls1)
-    return degree_m
-
-
-def normal_matrix (adjacency_matrix, degree_matrix):
-    x = np.power(degree_matrix.diagonal(), -0.5)
-    y = np.zeros((len(degree_matrix), len(degree_matrix)))
-    np.fill_diagonal(y, x)
-    mid = np.dot(y, adjacency_matrix)
-    a_delta = np.dot (mid, y)
-    return a_delta
-
-
-def feature_input (df):
-    x = df.drop_duplicates(subset = 'Clean_task_code')
-    empty = np.zeros(60).reshape(1,60)
-    ls = x['Clean_task_name'].tolist()
-    ls_token = token(prep(ls))
-    length_curr = x['r_length'].replace('None',0).tolist()
-    pos_curr  = x['r_pos'].replace('None',0).tolist()
-    x['Duration'] = x['Duration'].astype(int)
-    a = x['Duration'].to_numpy()
-    dur_curr = (np.log(a+1)).reshape(len(ls),1)
-    for i in range (len(ls)):
-        n = ' '.join(ls_token[i])
-        m = trained_model.wv[n].reshape(1,60)
-        empty = np.append (empty, m, axis = 0)
-    empty_ = np.delete(empty, 0, axis = 0)
-    len_curr = np.asarray(length_curr).reshape(len(ls),1)
-    po_curr = np.asarray(pos_curr).reshape(len(ls),1)
-    empty_ = np.append (empty_, len_curr, axis = 1)
-    empty_ = np.append (empty_, po_curr, axis = 1)
-    empty_ = np.append (empty_, dur_curr, axis = 1)
-    empty_ = empty_.astype(float)
-    return empty_ 
-
-
-lemmatizer = WordNetLemmatizer()
-def prep (ls):
-    test_token, test_lemma, test_return = [], [], []
-    for i in range (len (ls)):
-        token = tokenize(str(ls[i]))
-        test_token.append (list(token))  
-    for i in range (len (test_token)):
-        x = lemmatizer.lemmatize(str(test_token[i]))
-        x1 = eval('' + x + '')
-        test_lemma.append (x1)    
-    for i in range (len (test_lemma)):
-        test_return.append (' '.join(test_lemma[i]))       
-    return test_return
-
-
-def token (ls):
-    ps = PorterStemmer()
-    token_word = []
-    for i in range (len(ls)):
-        ls1 = word_tokenize(str(ls[i]))
-        ls2 = []
-        for word in ls1:
-            word = word.lower()
-            word = ps.stem(word)   
-            ls2.append (word)
-        token_word.append (ls2)
-    return token_word
-    
-    
-test_ = pd.read_csv ('D:/OneDrive - University of Cambridge/Name_text/paper/test_head.csv')
-for i in id_list:
-    x2 = project.loc[project['Project_ID']== i,]
-    pred = graph(x2, 'Predecessor', 'Pred_logic', 'Pred_lag', 'Weight_pred', 'Pred_graph', 'Pred_found')
-    succ = graph(x2, 'Successor', 'Succ_logic', 'Succ_lag', 'Weight_succ', 'Succ_graph', 'Succ_found')
-    pred_label = pred.group_label()
-    succ_label = succ.group_label()
-    label2 = pred_label.merge (succ_label, on = ('Clean_task_code','Duration', 'Project_ID','Task_name', 'Clean_task_name','WBS', 'Graph_x','r_length', 'r_pos', 'Foundation_detail'))
-    label2['Pred_graph'] = np.where(label2.Pred_found.any() == label2.Foundation_detail.any() != 'None' , label2['Graph_x'], label2['Pred_graph'])
-    label2['Succ_graph'] = np.where(label2.Succ_found.any() == label2.Foundation_detail.any() != 'None' , label2['Graph_x'], label2['Succ_graph'])
-    test_ = test_.append (label2)
-    #amatrix = adjacency_matrix ('Pred_graph', 'Succ_graph', 'Graph_x', 'Weight_pred', 'Weight_succ', label2)
-    #print (amatrix.shape)
-    
-train_name = project['Clean_task_name'].tolist()
-train_name_ = token(prep(train_name))
-trained_model = FastText(train_name_, size = 60, min_count = 1, negative = 7, workers = 5)
-
-init = np.zeros((1,1))
-f_init = np.zeros((1,63))
-for i in id_list:
-    x2 = test_.loc[test_['Project_ID']==i,]
-    x2_ = x2.drop_duplicates(subset = 'Clean_task_code')
-    amatrix = adjacency_matrix (x2_, 'Pred_graph', 'Succ_graph', 'Graph_x', 'Weight_pred', 'Weight_succ')
-    A = init.shape[0]
-    B = amatrix.shape[0]
-    init = np.block([[init,np.zeros((A,B))],[np.zeros((B,A)), amatrix]])
-    feature = feature_input(x2_)
-    f_init = np.append (f_init, feature, axis=0)
-    print(x2_.shape, amatrix.shape, init.shape, f_init.shape, feature.dtype, i)
-    
-    
-init_ = np.delete(init, 0, 0)
-init_f = np.delete(init_, 0, 1)
-degree_m = degree_matrix (init_f)
-normal_m = normal_matrix (degree_m, init_f)
-feature_m = np.delete(f_init, 0, 0)
-train_in = np.dot (normal_m, feature_m)
-
-
-batch_size = [20, 40, 60, 70, 80]
-epochs = [60, 70, 80, 90]
-optimizer = ['SGD']
-neurons = [70,100,120]
-
-def create_model(optimizer='sgd', neurons = 20): 
-    gcn_model = models.Sequential()
-    gcn_model.add(layers.Dense(neurons, activation='relu', input_dim = 63))
-    gcn_model.add(layers.Dense(neurons, activation='relu'))
-    gcn_model.add(layers.Dense(neurons, activation='relu'))
-    gcn_model.add(layers.Dense(neurons, activation='softmax'))
-    gcn_model.add(layers.Dense(1))
-    #optimizer = tf.keras.optimizers.SGD(lr=learn_rate, momentum=momentum)
-    gcn_model.compile(loss='categorical_crossentropy', optimizer=optimizer, metrics=['accuracy'])
-    return gcn_model
-
-gcn_model = KerasClassifier(build_fn = create_model, verbose = 0)
-param_grid_1 = dict(batch_size = batch_size, epochs = epochs, optimizer=optimizer, 
-                    neurons = neurons)#
-grid_1 = GridSearchCV(estimator = gcn_model, param_grid=param_grid_1, 
-                      n_jobs=-1, cv=5, scoring='f1_macro')
-
-test_nodup = test_.drop_duplicates(subset = ('Clean_task_code', 'Project_ID'))
-le = preprocessing.LabelEncoder()
-label = le.fit_transform(test_nodup['Foundation_detail']).reshape(len(test_nodup),1)
-grid_result = grid_1.fit(train_in, label)
-best = grid_result.best_estimator_
-print("Best: %f using %s" % (grid_result.best_score_, grid_result.best_params_))
-print (classification_report(label_x, best.predict(train_in)))
-print (confusion_matrix(label_x, best.predict(train_in)))
+def replace_text (df, my_dict):
+    for i in range (len(df['Clean_task_code'])):
+        for j in list(my_dict.keys()):
+            if df['Clean_task_code'][i] == j:
+                new_key = df['Task_name'][i]
+                my_dict[new_key] = my_dict.pop(j)
+    return my_dict
